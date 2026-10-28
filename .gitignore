@@ -34,3 +34,7 @@ env/
 .vscode/
 *.swp
 *.swo
+
+# Generated experiment outputs and test caches
+outputs/
+.pytest_cache/
