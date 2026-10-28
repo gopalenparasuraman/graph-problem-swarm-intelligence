@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sis6116-mmas-tsp"
+version = "0.1.0"
+description = "MAX-MIN Ant System for one personalised symmetric TSP instance."
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.23", "matplotlib>=3.6"]
+
+[tool.setuptools.packages.find]
+include = ["sis6116*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
