@@ -35,7 +35,10 @@ From the repository root:
 ```bash
 pytest
 python -m sis6116.experiments
+python -m sis6116.rho_experiment
 ```
+
+The evaporation-rate run writes `outputs/rho_experiment/` and leaves the baseline files in `outputs/` in place.
 
 Or open `notebooks/mmas_tsp.ipynb`. The run writes:
 
