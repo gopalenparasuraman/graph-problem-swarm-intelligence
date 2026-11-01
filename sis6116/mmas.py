@@ -18,15 +18,16 @@ Pheromone update order inside each iteration
 6. Clip off-diagonal trails into [tau_min, tau_max]. The diagonal stays 0.
 
 The deposit in step 5 uses L_iteration_best even when best-so-far is
-shorter. The clip in step 6 uses the bounds from step 3, so a new
-global best tightens the bounds in the same iteration.
+shorter. The clip in step 6 uses the bounds from step 3. A shorter
+best-so-far increases both bounds in that same iteration, because
+tau_max = 1 / (rho * L_best_so_far) and tau_min = tau_max / (2 * N).
 """
 
 from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -44,6 +45,13 @@ from sis6116.validation import (
 )
 
 KNOWN_DEPOSIT_POLICIES = ("iteration_best", "all_ants", "global_best")
+
+# Off-diagonal pheromone is counted as sitting on a bound when
+# numpy.isclose matches that bound. Measurement happens after clipping,
+# except at iteration 0, which uses the initial matrix. The diagonal is
+# excluded. These tolerances do not enter the update.
+PHEROMONE_BOUND_RTOL = 1e-9
+PHEROMONE_BOUND_ATOL = 1e-12
 
 
 @dataclass(frozen=True)
@@ -80,6 +88,7 @@ class MMASResult:
     final_pheromone: np.ndarray
     instance_fingerprint: str
     parameters: dict[str, object]
+    diagnostics: list[dict[str, object]] = field(default_factory=list)
 
 
 def assert_v1_policies(config: MMASConfig) -> None:
@@ -424,6 +433,76 @@ def _as_float_rows(matrix: np.ndarray) -> list[list[float]]:
     return [[float(value) for value in row] for row in matrix.tolist()]
 
 
+def count_distinct_tours(tours: list[np.ndarray]) -> int:
+    """Count unique city sequences. This only reads the tours."""
+    return len({tuple(int(city) for city in tour.tolist()) for tour in tours})
+
+
+def observe_pheromone_bounds(
+    tau: np.ndarray, tau_min: float, tau_max: float
+) -> dict[str, float | int]:
+    """Fraction of off-diagonal entries at each bound.
+
+    An entry matches a bound when numpy.isclose is true with
+    PHEROMONE_BOUND_RTOL and PHEROMONE_BOUND_ATOL. The read does not
+    write the pheromone matrix.
+    """
+    if tau.shape[0] != tau.shape[1]:
+        raise ValidationError("pheromone matrix must be square")
+    off = ~np.eye(tau.shape[0], dtype=bool)
+    values = np.asarray(tau[off], dtype=np.float64)
+    count = int(values.size)
+    if count < 1:
+        raise ValidationError("pheromone matrix has no off-diagonal entries")
+    at_min = np.isclose(
+        values,
+        tau_min,
+        rtol=PHEROMONE_BOUND_RTOL,
+        atol=PHEROMONE_BOUND_ATOL,
+    )
+    at_max = np.isclose(
+        values,
+        tau_max,
+        rtol=PHEROMONE_BOUND_RTOL,
+        atol=PHEROMONE_BOUND_ATOL,
+    )
+    n_at_min = int(at_min.sum())
+    n_at_max = int(at_max.sum())
+    n_at_both = int(np.logical_and(at_min, at_max).sum())
+    return {
+        "n_off_diagonal": count,
+        "n_at_tau_min": n_at_min,
+        "n_at_tau_max": n_at_max,
+        "n_at_both_bounds": n_at_both,
+        "fraction_at_tau_min": float(n_at_min) / float(count),
+        "fraction_at_tau_max": float(n_at_max) / float(count),
+    }
+
+
+def _diagnostic_record(
+    iteration: int,
+    *,
+    distinct_tours: int | None,
+    n_tours: int | None,
+    iterations_since_last_improvement: int,
+    tau: np.ndarray,
+    tau_min: float,
+    tau_max: float,
+) -> dict[str, object]:
+    bounds = observe_pheromone_bounds(tau, tau_min, tau_max)
+    return {
+        "iteration": int(iteration),
+        "distinct_tours": distinct_tours,
+        "n_tours": n_tours,
+        "iterations_since_last_improvement": int(iterations_since_last_improvement),
+        "tau_min": float(tau_min),
+        "tau_max": float(tau_max),
+        "bound_rtol": PHEROMONE_BOUND_RTOL,
+        "bound_atol": PHEROMONE_BOUND_ATOL,
+        **bounds,
+    }
+
+
 def run_mmas(
     distance: object,
     optimiser_seed: int,
@@ -462,6 +541,19 @@ def run_mmas(
     best_cost = nn_cost
     last_improvement = 0
     history = [best_cost]
+    # Iteration 0 is the initial incumbent. No ant tours are constructed,
+    # and this read does not draw from the optimiser stream.
+    diagnostics = [
+        _diagnostic_record(
+            0,
+            distinct_tours=None,
+            n_tours=None,
+            iterations_since_last_improvement=0,
+            tau=tau,
+            tau_min=tau_min,
+            tau_max=tau_max,
+        )
+    ]
 
     for iteration in range(1, n_iterations + 1):
         # Frozen pheromone: construct_tours copies tau before any ant moves,
@@ -487,6 +579,18 @@ def run_mmas(
         if not np.array_equal(tau, tau.T):
             raise ValidationError("pheromone matrix lost symmetry")
         history.append(best_cost)
+        # Read-only diagnostics after the update. No random draws.
+        diagnostics.append(
+            _diagnostic_record(
+                iteration,
+                distinct_tours=count_distinct_tours(tours),
+                n_tours=n_ants,
+                iterations_since_last_improvement=iteration - last_improvement,
+                tau=tau,
+                tau_min=tau_min,
+                tau_max=tau_max,
+            )
+        )
 
     runtime = time.perf_counter() - started
     if tour_cost(matrix, best_tour) != best_cost:
@@ -497,6 +601,8 @@ def run_mmas(
         )
     if history[-1] != best_cost or len(history) != n_iterations + 1:
         raise ValidationError("convergence log does not match best-so-far")
+    if len(diagnostics) != len(history):
+        raise ValidationError("diagnostic log does not match the convergence log")
 
     parameters: dict[str, object] = {
         "alpha": alpha,
@@ -534,4 +640,5 @@ def run_mmas(
         final_pheromone=tau.copy(),
         instance_fingerprint=instance_fingerprint,
         parameters=parameters,
+        diagnostics=diagnostics,
     )
