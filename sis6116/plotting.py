@@ -42,11 +42,13 @@ def plot_mean_std(
     *,
     nn_city0: float | None = None,
     nn_best: float | None = None,
+    title: str | None = None,
+    series_label: str = "mean best-so-far",
 ) -> plt.Figure:
     mean, std = mean_and_sample_std(histories)
     iterations = np.arange(mean.shape[0])
     fig, ax = plt.subplots(figsize=(8.0, 4.5))
-    ax.plot(iterations, mean, color="C0", label="mean best-so-far")
+    ax.plot(iterations, mean, color="C0", label=series_label)
     ax.fill_between(
         iterations,
         mean - std,
@@ -66,7 +68,7 @@ def plot_mean_std(
         )
     ax.set_xlabel("Iteration (0 = initial incumbent)")
     ax.set_ylabel("Best-so-far tour cost")
-    ax.set_title("MMAS mean convergence")
+    ax.set_title("MMAS mean convergence" if title is None else title)
     ax.grid(True, alpha=0.3)
     ax.legend()
     fig.tight_layout()
@@ -78,6 +80,8 @@ def plot_overlay(
     histories: list[list[int]],
     seeds: list[int],
     path: Path,
+    *,
+    title: str | None = None,
 ) -> plt.Figure:
     if len(histories) != len(seeds):
         raise ValidationError("overlay requires one seed per history")
@@ -92,9 +96,59 @@ def plot_overlay(
         ax.plot(iterations, history, linewidth=1.0, label=f"seed {seed}")
     ax.set_xlabel("Iteration (0 = initial incumbent)")
     ax.set_ylabel("Best-so-far tour cost")
-    ax.set_title("MMAS best-so-far by run")
+    ax.set_title("MMAS best-so-far by run" if title is None else title)
     ax.grid(True, alpha=0.3)
     ax.legend(ncol=2, fontsize=8)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    return fig
+
+
+def plot_mean_comparison(
+    series: list[tuple[str, list[list[int]]]],
+    path: Path,
+    *,
+    nn_city0: float | None = None,
+    nn_best: float | None = None,
+    title: str = "Mean best-so-far by configuration",
+) -> plt.Figure:
+    """Plot one measured mean curve and sample-std band per series.
+
+    Means and bands are computed here from the supplied histories.
+    """
+    if len(series) < 2:
+        raise ValidationError("comparison plot requires at least 2 series")
+    colors = ("#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd")
+    fig, ax = plt.subplots(figsize=(8.5, 5.0))
+    for index, (label, histories) in enumerate(series):
+        mean, std = mean_and_sample_std(histories)
+        iterations = np.arange(mean.shape[0])
+        color = colors[index % len(colors)]
+        ax.plot(iterations, mean, color=color, linewidth=1.8, label=label, zorder=3)
+        ax.fill_between(
+            iterations,
+            mean - std,
+            mean + std,
+            color=color,
+            alpha=0.18,
+            linewidth=0,
+            zorder=2,
+        )
+    if nn_city0 is not None:
+        ax.axhline(nn_city0, color="0.35", linestyle="--", linewidth=1.0, label="NN city 0")
+    if nn_best is not None:
+        ax.axhline(
+            nn_best,
+            color="0.35",
+            linestyle=":",
+            linewidth=1.0,
+            label="NN best of all starts",
+        )
+    ax.set_xlabel("Iteration (0 = initial incumbent)")
+    ax.set_ylabel("Best-so-far tour cost")
+    ax.set_title(title)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8)
     fig.tight_layout()
     fig.savefig(path, dpi=150, bbox_inches="tight")
     return fig
